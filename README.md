@@ -1,6 +1,6 @@
 # micro IDE Setup
 
-A setup script that turns the [micro](https://micro-editor.github.io/) terminal editor (v2.0.15) into a lightweight IDE with a file tree, editor pane, and integrated terminal.
+A setup script that turns the [micro](https://micro-editor.github.io/) terminal editor (v2.0.15) into a lightweight IDE with a file tree, editor pane, and integrated terminal — without modifying micro's default configuration.
 
 ## Layout
 
@@ -27,6 +27,8 @@ A setup script that turns the [micro](https://micro-editor.github.io/) terminal 
 ## Installation
 
 ```bash
+git clone git@gitlab.com:gd-pub/microide.git
+cd microide
 chmod +x setup.sh
 ./setup.sh
 source ~/.bashrc
@@ -37,16 +39,18 @@ Re-running the script is safe — it cleans up and starts fresh each time.
 
 ## Aliases
 
-| Alias | What it does |
-|-------|-------------|
-| `microide` | Full IDE: tree + editor + terminal (`micro .`) |
-| `microlite` | Plain micro, no plugins or config (`micro --clean`) |
+| Command | What it does |
+|---------|-------------|
+| `microide` | Full IDE: tree + editor + terminal (uses `~/.config/microide/`) |
+| `micro` | Plain/vanilla micro — completely unmodified by this setup |
+
+The `microide` alias sets `MICRO_CONFIG_DIR=~/.config/microide` so that all IDE plugins and settings live in a separate directory. Running `micro` directly uses its default config (`~/.config/micro/`), which this script never touches.
 
 ## What the script does
 
 ### 1. Installs the filemanager plugin
 
-Clones the official [micro-editor/updated-plugins](https://github.com/micro-editor/updated-plugins) repository and copies `filemanager-plugin` into `~/.config/micro/plug/filemanager/`.
+Clones the official [micro-editor/updated-plugins](https://github.com/micro-editor/updated-plugins) repository and copies `filemanager-plugin` into `~/.config/microide/plug/filemanager/`.
 
 ### 2. Patches the plugin (4 changes to `filemanager.lua`)
 
@@ -73,7 +77,7 @@ Adds `onSave()` and `onSetActive()` callbacks that call `update_current_dir()` t
 
 ### 3. Auto-opens a terminal at the bottom
 
-Creates `~/.config/micro/init.lua` with a `postinit()` function that opens a horizontal split with a terminal emulator. The terminal opens at 50% height — drag the split border with the mouse to resize.
+Creates `~/.config/microide/init.lua` with a `postinit()` function that opens a horizontal split with a terminal emulator. The terminal opens at 50% height — drag the split border with the mouse to resize.
 
 ### 4. F2 = cycle panes (works everywhere)
 
@@ -83,11 +87,10 @@ Binds **F2** to `NextSplit|FirstSplit` in `bindings.json`. This is the recommend
 - **F2** is not used by bash, zsh, or the GNOME terminal, so it passes through cleanly to micro even from the terminal pane.
 - **Mouse click** on any pane also always works.
 
-### 5. Bash aliases
+### 5. Bash alias
 
-Adds two aliases to `~/.bashrc`:
-- `microide` → `micro .` (full IDE mode)
-- `microlite` → `micro --clean` (plain editor, no plugins or config)
+Adds the `microide` alias to `~/.bashrc`:
+- `microide` → `MICRO_CONFIG_DIR=~/.config/microide micro .`
 
 ## Keybindings
 
@@ -106,17 +109,16 @@ Adds two aliases to `~/.bashrc`:
 
 | File | Action |
 |------|--------|
-| `~/.config/micro/plug/filemanager/` | Installed + patched |
-| `~/.config/micro/settings.json` | Updated (merged) |
-| `~/.config/micro/bindings.json` | F2 binding + cleanup |
-| `~/.config/micro/init.lua` | Created (terminal auto-open) |
-| `~/.bashrc` | Added aliases |
+| `~/.config/microide/plug/filemanager/` | Installed + patched |
+| `~/.config/microide/settings.json` | Updated (merged) |
+| `~/.config/microide/bindings.json` | F2 binding + cleanup |
+| `~/.config/microide/init.lua` | Created (terminal auto-open) |
+| `~/.bashrc` | Added alias |
 
 ## Uninstall
 
 ```bash
-rm -rf ~/.config/micro/plug/filemanager
-rm -f ~/.config/micro/init.lua
+rm -rf ~/.config/microide
 ```
 
-Remove the `microlite` alias lines from `~/.bashrc`, and optionally remove `filemanager.*` entries from `settings.json` and the `F2` binding from `bindings.json`.
+Remove the `microide` alias line from `~/.bashrc`.

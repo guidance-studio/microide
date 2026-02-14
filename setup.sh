@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-MICRO_CONFIG="$HOME/.config/micro"
+MICRO_CONFIG="$HOME/.config/microide"
 PLUG_DIR="$MICRO_CONFIG/plug/filemanager"
 FMLUA="$PLUG_DIR/filemanager.lua"
 
@@ -35,7 +35,7 @@ echo "[3/7] Patching filemanager.lua..."
 python3 << 'PYEOF'
 import os, re, sys
 
-fpath = os.path.expanduser("~/.config/micro/plug/filemanager/filemanager.lua")
+fpath = os.path.expanduser("~/.config/microide/plug/filemanager/filemanager.lua")
 with open(fpath, 'r') as f:
     lines = f.readlines()
 
@@ -187,7 +187,7 @@ echo "[5/7] Writing settings.json..."
 python3 << 'PYEOF'
 import json, os
 
-spath = os.path.expanduser("~/.config/micro/settings.json")
+spath = os.path.expanduser("~/.config/microide/settings.json")
 settings = {}
 if os.path.exists(spath):
     try:
@@ -210,7 +210,7 @@ echo "[6/7] Writing bindings.json..."
 python3 << 'PYEOF'
 import json, os
 
-bpath = os.path.expanduser("~/.config/micro/bindings.json")
+bpath = os.path.expanduser("~/.config/microide/bindings.json")
 bindings = {}
 if os.path.exists(bpath):
     try:
@@ -238,24 +238,27 @@ PYEOF
 echo "[7/7] Setting up aliases..."
 
 BASHRC="$HOME/.bashrc"
+ALIAS_LINE='alias microide="MICRO_CONFIG_DIR=~/.config/microide micro ."'
 
-# microide alias (full IDE: tree + editor + terminal)
 if ! grep -q 'alias microide=' "$BASHRC" 2>/dev/null; then
     echo '' >> "$BASHRC"
-    echo '# micro IDE aliases' >> "$BASHRC"
-    echo 'alias microlite="micro --clean"' >> "$BASHRC"
-    echo "   OK — added 'microlite' aliases to .bashrc"
+    echo '# micro IDE alias' >> "$BASHRC"
+    echo "$ALIAS_LINE" >> "$BASHRC"
+    echo "   OK — added 'microide' alias to .bashrc"
 else
-    # Update existing aliases
-    sed -i 's|^alias microlite=.*|alias microlite="micro --clean"|' "$BASHRC"
-    echo "   OK — updated existing aliases in .bashrc"
+    # Update existing alias
+    sed -i 's|^alias microide=.*|'"$ALIAS_LINE"'|' "$BASHRC"
+    # Remove old microlite alias if present
+    sed -i '/^alias microlite=/d' "$BASHRC"
+    echo "   OK — updated existing alias in .bashrc"
 fi
 
 # ── DONE ──
 echo ""
 echo "=== DONE ==="
 echo ""
-echo "  microlite   = plain micro, no plugins/config"
+echo "  microide    = IDE mode (tree + editor + terminal)"
+echo "  micro       = plain/vanilla micro (unchanged)"
 echo "  F2          = cycle panes (works from terminal too)"
 echo ""
 echo "  Run: source ~/.bashrc && microide"
