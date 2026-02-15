@@ -1,127 +1,310 @@
-# micro IDE Setup
+#!/bin/bash
+set -euo pipefail
 
-A setup script that turns the [micro](https://micro-editor.github.io/) terminal editor (v2.0.15) into a lightweight IDE with a file tree, editor pane, and integrated terminal — without modifying micro's default configuration.
+MICRO_CONFIG="$HOME/.config/microide"
+PLUG_DIR="$MICRO_CONFIG/plug/filemanager"
+FMLUA="$PLUG_DIR/filemanager.lua"
 
-## Layout
+echo ""
+echo "=== micro IDE setup ==="
+echo ""
 
-```
-┌──────────┬──────────────────────────┐
-│ tree     │       editor             │
-│          │                          │
-│ project/ │   your code here         │
-│ ├─ src/  │                          │
-│ ├─ docs/ │                          │
-│ └─ ...   │                          │
-│          ├──────────────────────────┤
-│          │       terminal           │
-│          │  $ _                     │
-└──────────┴──────────────────────────┘
-```
+# ── 0. INSTALL MICRO IF MISSING ──
+if ! command -v micro &>/dev/null; then
+    echo "[0/7] Installing micro editor..."
+    tmpdir=$(mktemp -d)
+    (cd "$tmpdir" && curl -fsSL https://getmic.ro | bash)
+    mkdir -p "$HOME/.local/bin"
+    mv "$tmpdir/micro" "$HOME/.local/bin/micro"
+    rm -rf "$tmpdir"
+    if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+        export PATH="$HOME/.local/bin:$PATH"
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+    fi
+    echo "   Installed micro to ~/.local/bin/micro"
+else
+    echo "[0/7] micro already installed: $(micro -version 2>&1 | head -1)"
+fi
 
-## Requirements
+# ── 1. CLEANUP ──
+echo "[1/7] Deep cleanup..."
+# Clean microide config
+rm -f "$MICRO_CONFIG/init.lua"
+rm -rf "$PLUG_DIR"
+rm -rf /tmp/micro-up
+mkdir -p "$MICRO_CONFIG/plug"
+# Clean leftover plugins/config from old attempts in default micro config
+rm -rf "$HOME/.config/micro/plug/filemanager"
+rm -f "$HOME/.config/micro/init.lua"
+# Fix broken bindings in default micro config (from previous attempts)
+if [ -f "$HOME/.config/micro/bindings.json" ]; then
+    python3 -c "
+import json
+p='$HOME/.config/micro/bindings.json'
+try:
+    b=json.load(open(p))
+    changed=False
+    for k in list(b):
+        v=str(b[k])
+        if 'FirstSplit' in v or 'filemanager' in v or 'MouseDoubleClick' in k:
+            del b[k]; changed=True
+    if changed:
+        json.dump(b,open(p,'w'),indent=4)
+        print('   Cleaned default micro bindings.json')
+except: pass
+"
+fi
+echo "   OK"
 
-- **micro** 2.0.15 (`micro -version`)
-- **git**, **python3**
-- Tested on Ubuntu 25.10
+# ── 2. CLONE OFFICIAL REPO ──
+echo "[2/7] Cloning micro-editor/updated-plugins..."
+git clone --quiet --depth 1 https://github.com/micro-editor/updated-plugins.git /tmp/micro-up
+cp -r /tmp/micro-up/filemanager-plugin "$PLUG_DIR"
+rm -rf /tmp/micro-up
 
-## Installation
+if ! grep -q 'import("micro")' "$FMLUA"; then
+    echo "   ERROR: downloaded file does not contain modern micro API"
+    exit 1
+fi
+echo "   OK"
 
-```bash
-chmod +x setup.sh
-./setup.sh
-source ~/.bashrc
-microide
-```
+# ── 3. PATCH FILEMANAGER.LUA ──
+echo "[3/7] Patching filemanager.lua..."
 
-Re-running the script is safe — it cleans up and starts fresh each time.
+python3 << 'PYEOF'
+import os, re, sys
 
-## Aliases
+fpath = os.path.expanduser("~/.config/microide/plug/filemanager/filemanager.lua")
+with open(fpath, 'r') as f:
+    lines = f.readlines()
 
-| Command | What it does |
-|---------|-------------|
-| `microide` | Full IDE in current directory |
-| `microide ~/path` | Full IDE in specified directory (returns to original dir on exit) |
-| `micro` | Plain/vanilla micro — completely unmodified by this setup |
+def skip_function(lines, start):
+    """Given index of 'function ...' line, return index after its closing 'end'."""
+    i = start + 1
+    depth = 1
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith('--'):
+            i += 1
+            continue
+        if re.search(r'\bfunction\b', s):
+            depth += 1
+        if re.search(r'\bif\b.+\bthen\b', s) and not s.endswith('end'):
+            depth += 1
+        if re.search(r'\bfor\b.+\bdo\b', s):
+            depth += 1
+        if re.search(r'\bwhile\b.+\bdo\b', s):
+            depth += 1
+        for _ in re.finditer(r'\bend\b', s):
+            depth -= 1
+        if depth <= 0:
+            return i + 1
+        i += 1
+    return i
 
-The `microide` alias passes `-config-dir ~/.config/microide` so that all IDE plugins and settings live in a separate directory. It accepts an optional directory argument and runs in a subshell, so you return to your original directory when you exit micro. Running `micro` directly uses its default config (`~/.config/micro/`), which this script never touches (and cleans up any leftover files from previous setup attempts).
+total = len(lines)
+new_lines = []
+i = 0
+p_vsplit = p_enter = p_mouse = False
 
-## What the script does
+while i < total:
+    s = lines[i].rstrip('\n')
 
-### 1. Deep cleanup
+    # ── PATCH A: file open — replace VSplitIndex with OpenBuffer in existing editor pane
+    # buffer.NewBufferFromFile() returns (buf, err); assigning to local captures only buf
+    if 'VSplitIndex' in s and 'NewBufferFromFile' in s and 'abspath' in s:
+        indent = len(s) - len(s.lstrip())
+        ws = ' ' * indent
+        new_lines.append(ws + "-- [PATCHED] open in existing editor pane\n")
+        new_lines.append(ws + "local _buf = buffer.NewBufferFromFile(scanlist[y].abspath)\n")
+        new_lines.append(ws + "local _tab = micro.CurTab()\n")
+        new_lines.append(ws + "for _i = 1, #_tab.Panes do\n")
+        new_lines.append(ws + "    if _tab.Panes[_i] ~= tree_view then\n")
+        new_lines.append(ws + "        _tab:SetActive(_i - 1)\n")
+        new_lines.append(ws + "        _tab.Panes[_i]:OpenBuffer(_buf)\n")
+        new_lines.append(ws + "        break\n")
+        new_lines.append(ws + "    end\n")
+        new_lines.append(ws + "end\n")
+        p_vsplit = True
+        i += 1
+        continue
 
-Removes any leftover filemanager plugins and init.lua from both `~/.config/microide/` and `~/.config/micro/` (from previous attempts). Fixes broken bindings in the default micro config so that `micro` (vanilla) works cleanly.
+    # ── PATCH B: Enter key opens file/dir in tree
+    if s.strip().startswith('function preInsertNewline'):
+        new_lines.append("function preInsertNewline(view)\n")
+        new_lines.append("    if view == tree_view then\n")
+        new_lines.append("        try_open_at_cursor()\n")
+        new_lines.append("        return false\n")
+        new_lines.append("    end\n")
+        new_lines.append("end\n")
+        p_enter = True
+        i = skip_function(lines, i)
+        continue
 
-### 2. Installs the filemanager plugin
+    # ── PATCH C: single click = select, double click = open (timing-based)
+    if s.strip().startswith('function preMousePress'):
+        new_lines.append("-- [PATCHED] single click = select, double click = open\n")
+        new_lines.append("local _gotime = import(\"time\")\n")
+        new_lines.append("local _last_tree_click = 0\n")
+        new_lines.append("\n")
+        new_lines.append("function preMousePress(view, event)\n")
+        new_lines.append("    if view == tree_view then\n")
+        new_lines.append("        local now = _gotime.Now():UnixNano() / 1000000\n")
+        new_lines.append("        if now - _last_tree_click < 400 then\n")
+        new_lines.append("            _last_tree_click = 0\n")
+        new_lines.append("            try_open_at_cursor()\n")
+        new_lines.append("            return false\n")
+        new_lines.append("        end\n")
+        new_lines.append("        _last_tree_click = now\n")
+        new_lines.append("    end\n")
+        new_lines.append("end\n")
+        p_mouse = True
+        i = skip_function(lines, i)
+        continue
 
-Clones the official [micro-editor/updated-plugins](https://github.com/micro-editor/updated-plugins) repository and copies `filemanager-plugin` into `~/.config/microide/plug/filemanager/`.
+    new_lines.append(lines[i])
+    i += 1
 
-### 3. Patches the plugin (4 changes to `filemanager.lua`)
+# ── PATCH D: auto-refresh tree on save and pane switch
+# IMPORTANT: guard against tree_view being destroyed during close_tree.
+# update_current_dir calls ResizePane on tree_view, which crashes if
+# tree_view has already been Quit'd. Use pcall to catch this safely.
+new_lines.append("\n")
+new_lines.append("-- [PATCHED] auto-refresh tree on save and pane switch\n")
+new_lines.append("function onSave(view)\n")
+new_lines.append("    if tree_view ~= nil then\n")
+new_lines.append("        pcall(update_current_dir, current_dir)\n")
+new_lines.append("    end\n")
+new_lines.append("    return true\n")
+new_lines.append("end\n")
+new_lines.append("\n")
+new_lines.append("function onSetActive(view)\n")
+new_lines.append("    if tree_view ~= nil then\n")
+new_lines.append("        pcall(update_current_dir, current_dir)\n")
+new_lines.append("    end\n")
+new_lines.append("end\n")
 
-**A) Open files in the existing editor pane**
+with open(fpath, 'w') as f:
+    f.writelines(new_lines)
 
-By default the plugin opens every file in a new vertical split. The patch finds the existing editor pane and replaces its buffer instead. Also fixes a Lua issue where `buffer.NewBufferFromFile()` returns two values (buffer + error) which caused a runtime error when passed directly to `OpenBuffer()`.
+print(f"   A) VSplit->OpenBuffer (local var fix): {'OK' if p_vsplit else 'FAILED'}")
+print(f"   B) Enter opens in tree:                {'OK' if p_enter else 'FAILED'}")
+print(f"   C) Click=select, DblClick=open:        {'OK' if p_mouse else 'FAILED'}")
+print(f"   D) Auto-refresh (with pcall guard):    OK")
 
-**B) Enter key opens files and directories**
+if not (p_vsplit and p_enter and p_mouse):
+    sys.exit(1)
+PYEOF
 
-Overrides `preInsertNewline()` so that pressing Enter in the tree opens the selected file or enters the selected directory.
+if [ $? -ne 0 ]; then
+    echo "   ERROR in patches!"
+    exit 1
+fi
 
-**C) Single click selects, double click opens**
+# ── 4. INIT.LUA (auto terminal at bottom) ──
+echo "[4/7] Writing init.lua (auto terminal)..."
 
-Replaces `preMousePress()` with a timing-based double-click detector using Go's `time.Now():UnixNano()`. Two clicks within 400ms open the file/directory. A single click just moves the cursor.
+cat > "$MICRO_CONFIG/init.lua" << 'LUAEOF'
+local micro = import("micro")
 
-**D) Auto-refresh on save and pane switch**
+function postinit()
+    -- postinit() runs after all plugins (including filemanager) have initialized.
+    -- At this point the tree is already open and the editor pane is active.
+    local pane = micro.CurPane()
+    if pane ~= nil then
+        -- Create horizontal split (new pane below, which gets focus)
+        pane:HSplitAction()
+        -- Open terminal in the new bottom pane
+        micro.CurPane():HandleCommand("term")
+        -- Cursor starts in terminal; press F2 or click to switch to editor
+    end
+end
+LUAEOF
 
-Adds `onSave()` and `onSetActive()` callbacks that call `update_current_dir()` to rescan the filesystem and redraw the tree. Both are wrapped in `pcall()` to prevent crashes when the tree is being closed.
+echo "   OK"
 
-- Saving a file (Ctrl+S) triggers an immediate refresh.
-- Switching panes (F2 or mouse click) triggers a refresh — this catches changes made from the terminal or external tools.
+# ── 5. SETTINGS.JSON ──
+echo "[5/7] Writing settings.json..."
 
-> **Note:** changes made in the terminal pane are only reflected after leaving the terminal (F2 or click on another pane), because micro's terminal emulator does not fire Lua plugin callbacks.
+python3 << 'PYEOF'
+import json, os
 
-### 4. Auto-opens a terminal at the bottom
+spath = os.path.expanduser("~/.config/microide/settings.json")
+settings = {}
+if os.path.exists(spath):
+    try:
+        with open(spath) as f:
+            settings = json.load(f)
+    except:
+        pass
 
-Creates `init.lua` with a `postinit()` function that opens a horizontal split with a terminal emulator. The terminal opens at 50% height — drag the split border with the mouse to resize.
+settings["filemanager.openonstart"] = True
+settings["filemanager.foldersfirst"] = True
 
-### 5. Keybinding cleanup
+with open(spath, 'w') as f:
+    json.dump(settings, f, indent=4, sort_keys=True)
+print("   OK")
+PYEOF
 
-Cleans up any broken bindings from previous setup attempts in both `~/.config/microide/bindings.json` and `~/.config/micro/bindings.json`.
+# ── 6. BINDINGS.JSON ──
+echo "[6/7] Writing bindings.json..."
 
-### 6. Bash alias
+python3 << 'PYEOF'
+import json, os
 
-Adds the `microide` alias to `~/.bashrc`. Also removes any stale `microlite` aliases from previous versions.
+bpath = os.path.expanduser("~/.config/microide/bindings.json")
+bindings = {}
+if os.path.exists(bpath):
+    try:
+        with open(bpath) as f:
+            bindings = json.load(f)
+    except:
+        pass
 
-## Keybindings
+# Remove broken bindings from previous setup attempts
+for key in list(bindings.keys()):
+    val = str(bindings.get(key, ''))
+    if 'filemanager' in val or 'MouseDoubleClick' in key or 'FirstSplit' in val or 'NextSplit' in val:
+        del bindings[key]
 
-| Key | In tree | In editor | In terminal |
-|-----|---------|-----------|-------------|
-| **Enter** | Open file / enter dir | Newline | Send command |
-| **Double click** | Open file / enter dir | Select word | Select word |
-| **Single click** | Select | Move cursor | Move cursor |
-| **← / →** | Collapse / expand dir | Move cursor | — |
-| **Ctrl+W** | Next pane | Next pane | *(captured by bash)* |
-| **Ctrl+S** | — | Save + refresh tree | — |
-| **Ctrl+Q** | Close tree | Close file | Close terminal |
-| **Ctrl+E** | Command bar | Command bar | — |
+# Remove F2 if present (doesn't work inside terminal pane)
+bindings.pop("F2", None)
 
-> **Terminal pane limitation:** Ctrl+W does not work inside the terminal pane because bash captures it (delete previous word). Use **mouse click** on the editor or tree pane to switch out of the terminal.
+with open(bpath, 'w') as f:
+    json.dump(bindings, f, indent=4, sort_keys=True)
+print("   OK")
+PYEOF
 
-## Files modified
+# ── 7. BASH ALIAS ──
+echo "[7/7] Setting up aliases..."
 
-| File | Action |
-|------|--------|
-| `~/.config/microide/plug/filemanager/` | Installed + patched |
-| `~/.config/microide/settings.json` | Created |
-| `~/.config/microide/bindings.json` | Cleaned up |
-| `~/.config/microide/init.lua` | Created (terminal auto-open) |
-| `~/.config/micro/bindings.json` | Cleaned up (remove broken entries) |
-| `~/.config/micro/plug/filemanager/` | Removed (cleanup) |
-| `~/.config/micro/init.lua` | Removed (cleanup) |
-| `~/.bashrc` | Added `microide` alias |
+BASHRC="$HOME/.bashrc"
+# Remove all old microide/microlite aliases first
+sed -i '/^alias microide=/d' "$BASHRC"
+sed -i '/^alias microlite=/d' "$BASHRC"
+sed -i '/^# micro IDE alias/d' "$BASHRC"
+sed -i '/^_microide()/d' "$BASHRC"
+sed -i '/^alias microide/d' "$BASHRC"
 
-## Uninstall
+# Add clean alias (function + alias for directory support)
+{
+    echo ''
+    echo '# micro IDE alias'
+    echo '_microide() { local d="${1:-.}"; (cd "$d" && micro -config-dir ~/.config/microide); }'
+    echo 'alias microide="_microide"'
+} >> "$BASHRC"
+echo "   OK"
 
-```bash
-rm -rf ~/.config/microide
-```
-
-Remove the `microide` alias line from `~/.bashrc`.
+# ── DONE ──
+echo ""
+echo "=== DONE ==="
+echo ""
+echo "  microide           = IDE mode (tree + editor + terminal)"
+echo "  microide ~/path    = IDE mode in specified directory"
+echo "  micro              = plain/vanilla micro (unchanged)"
+echo ""
+echo "  Navigate panes: Ctrl+W or mouse click"
+echo "  (Ctrl+W does not work inside the terminal pane — use mouse click)"
+echo ""
+echo "  Run: source ~/.bashrc && microide"
+echo ""

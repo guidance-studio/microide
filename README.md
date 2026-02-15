@@ -20,9 +20,10 @@ A setup script that turns the [micro](https://micro-editor.github.io/) terminal 
 
 ## Requirements
 
-- **micro** 2.0.15 (`micro -version`)
-- **git**, **python3**
+- **git**, **python3**, **curl**
 - Tested on Ubuntu 25.10
+
+> **Note:** if `micro` is not installed, the setup script will automatically download and install it to `~/.local/bin/`.
 
 ## Installation
 
