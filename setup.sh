@@ -240,6 +240,7 @@ if os.path.exists(spath):
 
 settings["filemanager.openonstart"] = True
 settings["filemanager.foldersfirst"] = True
+settings["softwrap"] = True
 
 with open(spath, 'w') as f:
     json.dump(settings, f, indent=4, sort_keys=True)
